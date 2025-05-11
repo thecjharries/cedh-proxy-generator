@@ -1,11 +1,14 @@
+use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::get;
+use reqwest::Client;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use ril::prelude::*;
 use rust_embed::Embed;
 use scryfall::card::{Card, ImageUris, Layout};
 
 struct LoadedCard {
+    prefix: String,
     name: String,
     image: Image<Rgb>,
 }
@@ -15,7 +18,8 @@ impl LoadedCard {
         static ALPHA_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)[^a-z]").unwrap());
         static UNDERSCORE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"_+").unwrap());
         format!(
-            "{}.png",
+            "{}_{}.png",
+            self.prefix,
             UNDERSCORE_PATTERN.replace_all(
                 &ALPHA_PATTERN.replace_all(&self.name.to_lowercase(), "_"),
                 "_",
@@ -54,14 +58,25 @@ impl LoadedCard {
 struct Fonts;
 
 async fn load_card(
+    prefix: String,
     cardname: String,
     image_uris: Option<ImageUris>,
 ) -> Result<LoadedCard, Box<dyn std::error::Error>> {
+    static CLIENT: Lazy<ClientWithMiddleware> = Lazy::new(|| {
+        ClientBuilder::new(Client::new())
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: CACacheManager::default(),
+                options: HttpCacheOptions::default(),
+            }))
+            .build()
+    });
     if let Some(card_image_uris) = image_uris {
         let card_image_url = card_image_uris.png.unwrap();
-        let response = get(card_image_url).await?;
+        let response = CLIENT.get(card_image_url).send().await?;
         let image = Image::<Rgb>::from_bytes(ImageFormat::Png, response.bytes().await?)?;
         Ok(LoadedCard {
+            prefix,
             name: cardname.to_string(),
             image,
         })
@@ -70,7 +85,10 @@ async fn load_card(
     }
 }
 
-async fn load_images(cardname: &str) -> Result<Vec<LoadedCard>, Box<dyn std::error::Error>> {
+async fn load_images(
+    prefix: usize,
+    cardname: &str,
+) -> Result<Vec<LoadedCard>, Box<dyn std::error::Error>> {
     let card = Card::named(cardname).await?;
     let has_faces = match card.layout {
         Layout::Normal => false,
@@ -86,19 +104,55 @@ async fn load_images(cardname: &str) -> Result<Vec<LoadedCard>, Box<dyn std::err
     let mut cards: Vec<LoadedCard> = Vec::new();
     if has_faces {
         if let Some(card_faces) = card.card_faces {
-            for face in card_faces {
-                cards.push(load_card(face.name, face.image_uris).await?);
+            for (index, face) in card_faces.into_iter().enumerate() {
+                cards.push(
+                    load_card(
+                        format!("{:0>3}_{:0>2}", prefix, index),
+                        face.name,
+                        face.image_uris,
+                    )
+                    .await?,
+                );
             }
         }
     } else {
-        cards.push(load_card(card.name, card.image_uris).await?);
+        cards.push(load_card(format!("{:0>3}", prefix), card.name, card.image_uris).await?);
+    }
+    Ok(cards)
+}
+
+async fn load_all_cards(card_list: &str) -> Result<Vec<LoadedCard>, Box<dyn std::error::Error>> {
+    static CARD_LINE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"^(?<count>\d+)\s+(?<name>.*)$").unwrap());
+    let mut cards: Vec<LoadedCard> = Vec::new();
+    let lines = card_list.lines();
+    let mut prefix = 1;
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(caps) = CARD_LINE.captures(line) {
+            let count: usize = caps["count"].parse()?;
+            let name = &caps["name"];
+            for index in 0..count {
+                cards.append(load_images(prefix + index, name).await?.as_mut());
+            }
+            prefix += count;
+        } else {
+            return Err(format!("Invalid card line: {}", line).into());
+        }
     }
     Ok(cards)
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let images = load_images("Delver of Secrets").await?;
+    let images = load_all_cards(
+        "1 Sol Ring
+4 Springleaf Drum
+4 Swamp"
+    )
+    .await?;
     for mut image in images {
         image.save()?;
     }
