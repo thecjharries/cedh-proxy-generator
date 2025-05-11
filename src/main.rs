@@ -1,45 +1,104 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
 use reqwest::get;
-use scryfall::card::Card;
-use std::fs::File;
-use std::io::{Cursor, copy};
-
-use rust_embed::Embed;
-
 use ril::prelude::*;
+use rust_embed::Embed;
+use scryfall::card::{Card, ImageUris, Layout};
+
+struct LoadedCard {
+    name: String,
+    image: Image<Rgb>,
+}
+
+impl LoadedCard {
+    pub fn sanitized_name(self: &Self) -> String {
+        static ALPHA_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)[^a-z]").unwrap());
+        static UNDERSCORE_PATTERN: Lazy<Regex> = Lazy::new(|| Regex::new(r"_+").unwrap());
+        format!(
+            "{}.png",
+            UNDERSCORE_PATTERN.replace_all(
+                &ALPHA_PATTERN.replace_all(&self.name.to_lowercase(), "_"),
+                "_",
+            )
+        )
+    }
+
+    pub fn add_text(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let font_file = Fonts::get("HomeVideo-BLG6G.ttf").expect("Font not found");
+        let font = Font::from_bytes(&font_file.data, 128.0)?;
+        let rectangle = Rectangle::at(0, 250)
+            .with_size(self.image.width(), 200)
+            .with_fill(Rgb::new(0, 0, 0));
+        self.image.draw(&rectangle);
+        TextLayout::new()
+            .with_position(self.image.width() / 2, 250 + 36)
+            .with_basic_text(&font, "PLAYTEST", Rgb::new(255, 0, 0))
+            .with_horizontal_anchor(HorizontalAnchor::Center)
+            .with_align(TextAlign::Center)
+            .draw(&mut self.image);
+        Ok(())
+    }
+
+    pub fn save(&mut self) -> Result<String, Box<dyn std::error::Error>> {
+        let filename = &self.sanitized_name();
+        self.add_text()?;
+        self.image.save(ImageFormat::Png, filename)?;
+        Ok(filename.to_string())
+    }
+}
 
 #[derive(Embed)]
 #[folder = "fonts"]
 struct Fonts;
 
-#[tokio::main]
-async fn main() {
-    match Card::named("Lightning Bolt").await {
-        Ok(card) => {
-            println!("Card name: {}", card.name);
-            println!("Card set: {}", card.set);
-            let card_image_url = card.image_uris.unwrap().png.unwrap();
-            println!("Card image URL: {:?}", card_image_url);
-            let response = get(card_image_url).await.unwrap();
-            let mut file = File::create("lightning_bolt.png").unwrap();
-            let mut content = Cursor::new(response.bytes().await.unwrap());
-            copy(&mut content, &mut file).unwrap();
-        }
-        Err(e) => panic!("{e:?}"),
+async fn load_card(
+    cardname: String,
+    image_uris: Option<ImageUris>,
+) -> Result<LoadedCard, Box<dyn std::error::Error>> {
+    if let Some(card_image_uris) = image_uris {
+        let card_image_url = card_image_uris.png.unwrap();
+        let response = get(card_image_url).await?;
+        let image = Image::<Rgb>::from_bytes(ImageFormat::Png, response.bytes().await?)?;
+        Ok(LoadedCard {
+            name: cardname.to_string(),
+            image,
+        })
+    } else {
+        Err(format!("Card {} does not have image uris", cardname).into())
     }
-    let mut image = Image::<Rgb>::open("lightning_bolt.png").unwrap();
-    let font_file = Fonts::get("HomeVideo-BLG6G.ttf").unwrap();
-    let font = Font::from_bytes(&font_file.data, 128.0).unwrap();
-    // let font = Font::open(font_file.data, 128.0).unwrap();
-    let rectangle = Rectangle::at(0, 250)
-        .with_size(image.width(), 200)
-        .with_fill(Rgb::new(0, 0, 0));
-    image.draw(&rectangle);
-    // let text_for_image = TextSegment::new(&font, "PLAYTEST", Rgb::new(255, 0, 0));
-    TextLayout::new()
-        .with_position(image.width() / 2, 250 + 36)
-        .with_basic_text(&font, "PLAYTEST", Rgb::new(255, 0, 0))
-        .with_horizontal_anchor(HorizontalAnchor::Center)
-        .with_align(TextAlign::Center)
-        .draw(&mut image);
-    image.save(ImageFormat::Png, "lightning_bolt.png").unwrap();
+}
+
+async fn load_images(cardname: &str) -> Result<Vec<LoadedCard>, Box<dyn std::error::Error>> {
+    let card = Card::named(cardname).await?;
+    let has_faces = match card.layout {
+        Layout::Normal => false,
+        Layout::ModalDfc | Layout::Transform => true,
+        _ => {
+            return Err(format!(
+                "Card {} has an unsupported layout: {:?}",
+                card.name, card.layout
+            )
+            .into());
+        }
+    };
+    let mut cards: Vec<LoadedCard> = Vec::new();
+    if has_faces {
+        if let Some(card_faces) = card.card_faces {
+            for face in card_faces {
+                cards.push(load_card(face.name, face.image_uris).await?);
+            }
+        }
+    } else {
+        cards.push(load_card(card.name, card.image_uris).await?);
+    }
+    Ok(cards)
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let images = load_images("Delver of Secrets").await?;
+    for mut image in images {
+        image.save()?;
+    }
+    Ok(())
 }

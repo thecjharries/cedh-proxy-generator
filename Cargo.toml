@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+once_cell = "1.21.3"
+regex = "1.11.1"
 reqwest = "0.12.15"
 ril = { version = "0.10.3", features = ["png", "text"] }
 rust-embed = "8.7.1"
