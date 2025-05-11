@@ -3,7 +3,13 @@ use scryfall::card::Card;
 use std::fs::File;
 use std::io::{Cursor, copy};
 
+use rust_embed::Embed;
+
 use ril::prelude::*;
+
+#[derive(Embed)]
+#[folder = "fonts"]
+struct Fonts;
 
 #[tokio::main]
 async fn main() {
@@ -21,7 +27,9 @@ async fn main() {
         Err(e) => panic!("{e:?}"),
     }
     let mut image = Image::<Rgb>::open("lightning_bolt.png").unwrap();
-    let font = Font::open("src/HomeVideo-BLG6G.ttf", 128.0).unwrap();
+    let font_file = Fonts::get("HomeVideo-BLG6G.ttf").unwrap();
+    let font = Font::from_bytes(&font_file.data, 128.0).unwrap();
+    // let font = Font::open(font_file.data, 128.0).unwrap();
     let rectangle = Rectangle::at(0, 250)
         .with_size(image.width(), 200)
         .with_fill(Rgb::new(0, 0, 0));
