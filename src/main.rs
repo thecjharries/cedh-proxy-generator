@@ -24,15 +24,17 @@ impl LoadedCard {
     }
 
     pub fn add_text(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let font_file = Fonts::get("HomeVideo-BLG6G.ttf").expect("Font not found");
-        let font = Font::from_bytes(&font_file.data, 128.0)?;
+        static FONT: Lazy<Font> = Lazy::new(|| {
+            let font_file = Fonts::get("HomeVideo-BLG6G.ttf").expect("Font not found");
+            Font::from_bytes(&font_file.data, 128.0).unwrap()
+        });
         let rectangle = Rectangle::at(0, 250)
             .with_size(self.image.width(), 200)
             .with_fill(Rgb::new(0, 0, 0));
         self.image.draw(&rectangle);
         TextLayout::new()
             .with_position(self.image.width() / 2, 250 + 36)
-            .with_basic_text(&font, "PLAYTEST", Rgb::new(255, 0, 0))
+            .with_basic_text(&FONT, "PLAYTEST", Rgb::new(255, 0, 0))
             .with_horizontal_anchor(HorizontalAnchor::Center)
             .with_align(TextAlign::Center)
             .draw(&mut self.image);
