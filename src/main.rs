@@ -1,6 +1,8 @@
+use http_cache_reqwest::{CACacheManager, Cache, CacheMode, HttpCache, HttpCacheOptions};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use reqwest::get;
+use reqwest::Client;
+use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use ril::prelude::*;
 use rust_embed::Embed;
 use scryfall::card::{Card, ImageUris, Layout};
@@ -60,9 +62,18 @@ async fn load_card(
     cardname: String,
     image_uris: Option<ImageUris>,
 ) -> Result<LoadedCard, Box<dyn std::error::Error>> {
+    static CLIENT: Lazy<ClientWithMiddleware> = Lazy::new(|| {
+        ClientBuilder::new(Client::new())
+            .with(Cache(HttpCache {
+                mode: CacheMode::Default,
+                manager: CACacheManager::default(),
+                options: HttpCacheOptions::default(),
+            }))
+            .build()
+    });
     if let Some(card_image_uris) = image_uris {
         let card_image_url = card_image_uris.png.unwrap();
-        let response = get(card_image_url).await?;
+        let response = CLIENT.get(card_image_url).send().await?;
         let image = Image::<Rgb>::from_bytes(ImageFormat::Png, response.bytes().await?)?;
         Ok(LoadedCard {
             prefix,
@@ -138,10 +149,8 @@ async fn load_all_cards(card_list: &str) -> Result<Vec<LoadedCard>, Box<dyn std:
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let images = load_all_cards(
         "1 Sol Ring
-1 Springleaf Drum
-16 Swamp
-1 Talon Gates of Madara
-1 The One Ring",
+4 Springleaf Drum
+4 Swamp"
     )
     .await?;
     for mut image in images {
